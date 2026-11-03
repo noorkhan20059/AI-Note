@@ -1,0 +1,6 @@
+{
+  "name": "AI Study Buddy — Smart Learning Assistant",
+  "description": "Local-first AI study assistant with document Q&A, bilingual explanations in English, Urdu, and Roman Urdu, automatic quiz builder, spaced repetition flashcards, and weak topic analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
