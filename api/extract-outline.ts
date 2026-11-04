@@ -32,6 +32,18 @@ function parseJsonSafely(rawText: string, fallback: any): any {
   }
 }
 
+function isGarbledText(text: string): boolean {
+  if (!text || text.length < 15) return false;
+  const weirdSymbols = (text.match(/[^a-zA-Z0-9\s.,!?:;'"()\-\/]/g) || []).length;
+  if (weirdSymbols / text.length > 0.08) return true;
+  const words = text.split(/\s+/).filter((w) => w.length >= 3);
+  if (words.length > 4) {
+    const weirdWords = words.filter((w) => /[^a-zA-Z0-9.,!?-]/.test(w) || /[0-9][a-zA-Z]/.test(w));
+    if (weirdWords.length / words.length > 0.35) return true;
+  }
+  return false;
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -57,13 +69,13 @@ export default async function handler(req: any, res: any) {
       const samples: string[] = [];
       for (let i = 0; i < pagesData.length; i += step) {
         const p = pagesData[i];
-        if (p && p.text) {
+        if (p && p.text && !isGarbledText(p.text)) {
           samples.push(`[Page ${p.page}]:\n${p.text.slice(0, 1000)}`);
         }
       }
       effectiveSample = samples.join('\n\n---\n\n').slice(0, 20000);
     } else if (!effectiveSample) {
-      effectiveSample = (text || '').slice(0, 20000);
+      effectiveSample = !isGarbledText(text) ? (text || '').slice(0, 20000) : '';
     }
 
     // Compile detected headings summary from sections

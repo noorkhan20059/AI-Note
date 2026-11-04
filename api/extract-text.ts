@@ -1,5 +1,6 @@
 // Vercel Serverless Function: Complete Multi-Page PDF/DOCX Text Extraction
 // Maps to: /api/document/extract-text (via vercel.json rewrite)
+import zlib from 'zlib';
 
 export const config = {
   api: {
@@ -9,6 +10,102 @@ export const config = {
   },
   maxDuration: 60,
 };
+
+// Check if a text snippet consists of garbled binary/compressed characters
+export function isGarbledText(text: string): boolean {
+  if (!text || text.length < 15) return false;
+  // Non-alphanumeric, non-standard punctuation ratio
+  const weirdSymbols = (text.match(/[^a-zA-Z0-9\s.,!?:;'"()\-\/]/g) || []).length;
+  const ratio = weirdSymbols / text.length;
+  if (ratio > 0.08) return true;
+
+  // Check density of words with numbers and letters mixed or excessive symbols
+  const words = text.split(/\s+/).filter((w) => w.length >= 3);
+  if (words.length > 5) {
+    const weirdWords = words.filter((w) => /[^a-zA-Z0-9.,!?-]/.test(w) || /[0-9][a-zA-Z]/.test(w));
+    if (weirdWords.length / words.length > 0.35) return true;
+  }
+  return false;
+}
+
+// Pure Node.js FlateDecode stream decompressor for reliable serverless execution
+function extractTextFromPdfFlateStreams(buffer: Buffer): { fullText: string; pageCount: number; pagesData: { page: number; text: string }[] } {
+  const pagesData: { page: number; text: string }[] = [];
+  const textStreams: string[] = [];
+  let pos = 0;
+
+  while (pos < buffer.length) {
+    const streamIdx = buffer.indexOf('stream', pos);
+    if (streamIdx === -1) break;
+
+    let startData = -1;
+    if (buffer[streamIdx + 6] === 0x0D && buffer[streamIdx + 7] === 0x0A) {
+      startData = streamIdx + 8;
+    } else if (buffer[streamIdx + 6] === 0x0A) {
+      startData = streamIdx + 7;
+    }
+
+    if (startData !== -1) {
+      const endstreamIdx = buffer.indexOf('endstream', startData);
+      if (endstreamIdx !== -1) {
+        let endData = endstreamIdx;
+        if (buffer[endData - 2] === 0x0D && buffer[endData - 1] === 0x0A) {
+          endData -= 2;
+        } else if (buffer[endData - 1] === 0x0A) {
+          endData -= 1;
+        }
+
+        const streamSlice = buffer.subarray(startData, endData);
+        let decomp: Buffer | null = null;
+        try {
+          decomp = zlib.inflateSync(streamSlice);
+        } catch {
+          try {
+            decomp = zlib.inflateRawSync(streamSlice);
+          } catch {
+            // Not a flate stream
+          }
+        }
+
+        if (decomp) {
+          const textStr = decomp.toString('utf-8');
+          if (textStr.includes('BT') || textStr.includes('Tj') || textStr.includes('TJ')) {
+            const textChunks: string[] = [];
+            const tjRegex = /\(([^)]*)\)\s*Tj/g;
+            let m;
+            while ((m = tjRegex.exec(textStr)) !== null) {
+              textChunks.push(m[1]);
+            }
+            const tjArrayRegex = /\[(.*?)\]\s*TJ/g;
+            while ((m = tjArrayRegex.exec(textStr)) !== null) {
+              const inner = m[1];
+              const innerStrings = inner.match(/\(([^)]*)\)/g) || [];
+              const combined = innerStrings.map((s) => s.slice(1, -1)).join('');
+              if (combined) textChunks.push(combined);
+            }
+            const clean = textChunks.join(' ').replace(/\\([()\\])/g, '$1').replace(/\s+/g, ' ').trim();
+            if (clean.length > 25 && !isGarbledText(clean)) {
+              textStreams.push(clean);
+            }
+          }
+        }
+        pos = endstreamIdx + 9;
+        continue;
+      }
+    }
+    pos = streamIdx + 6;
+  }
+
+  textStreams.forEach((t, i) => {
+    pagesData.push({ page: i + 1, text: t });
+  });
+
+  return {
+    fullText: textStreams.join('\n\n'),
+    pageCount: Math.max(1, textStreams.length),
+    pagesData,
+  };
+}
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -54,36 +151,42 @@ export default async function handler(req: any, res: any) {
             const parser = new PDFParseClass({ data: new Uint8Array(buffer) });
             const textResult = await parser.getText();
             totalPages = textResult.total || (textResult.pages ? textResult.pages.length : 1) || 1;
-            fullText = (textResult.text || '').replace(/\x00/g, '');
+            const extracted = (textResult.text || '').replace(/\x00/g, '').trim();
 
-            if (textResult.pages && textResult.pages.length > 0) {
-              textResult.pages.forEach((p: any) => {
-                const clean = (p.text || '').replace(/\x00/g, '').trim();
-                pagesData.push({ page: p.num || pagesData.length + 1, text: clean });
-              });
+            if (extracted.length > 50 && !isGarbledText(extracted)) {
+              fullText = extracted;
+              if (textResult.pages && textResult.pages.length > 0) {
+                textResult.pages.forEach((p: any) => {
+                  const clean = (p.text || '').replace(/\x00/g, '').trim();
+                  if (!isGarbledText(clean)) {
+                    pagesData.push({ page: p.num || pagesData.length + 1, text: clean });
+                  }
+                });
+              }
             }
           } catch (classErr) {
             // pdf-parse v1 function interface
             const fnResult = await (PDFParseClass as any)(buffer);
-            fullText = (fnResult.text || '').replace(/\x00/g, '');
-            totalPages = fnResult.numpages || 1;
+            const extracted = (fnResult.text || '').replace(/\x00/g, '').trim();
+            if (extracted.length > 50 && !isGarbledText(extracted)) {
+              fullText = extracted;
+              totalPages = fnResult.numpages || 1;
+            }
           }
         }
       } catch (pdfErr: any) {
-        console.error('[extract-text] PDF parser error, running ASCII stream recovery:', pdfErr?.message || pdfErr);
-        const rawStr = buffer.toString('latin1');
-        const strings = rawStr.match(/[\x20-\x7E\t\n\r]{4,}/g) || [];
-        fullText = strings
-          .filter(
-            (s) =>
-              !s.startsWith('%PDF') &&
-              !s.includes('/Producer') &&
-              !s.includes('endobj') &&
-              !s.includes('endstream')
-          )
-          .join(' ')
-          .trim();
-        totalPages = Math.max(1, Math.round(fullText.length / 2000));
+        console.warn('[extract-text] pdf-parse library failed, falling back to Flate stream extraction:', pdfErr?.message || pdfErr);
+      }
+
+      // If pdf-parse failed or returned garbled/empty text, run pure FlateDecode stream decompressor
+      if (!fullText || fullText.length < 50 || isGarbledText(fullText)) {
+        console.log('[extract-text] Running pure zlib FlateDecode stream extractor...');
+        const flateResult = extractTextFromPdfFlateStreams(buffer);
+        if (flateResult.fullText && flateResult.fullText.length > 50) {
+          fullText = flateResult.fullText;
+          totalPages = flateResult.pageCount;
+          pagesData = flateResult.pagesData;
+        }
       }
     } else if (isDocx) {
       try {

@@ -117,10 +117,31 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           const pageMatches = (rawStr.match(/\/Type\s*\/Page\b/g) || []).length;
           estimatedPages = countMatch ? parseInt(countMatch[1], 10) : pageMatches > 0 ? pageMatches : 1;
 
+          // Helper to detect compressed binary garbage
+          const isGarbled = (str: string) => {
+            if (!str || str.length < 15) return false;
+            const weird = (str.match(/[^a-zA-Z0-9\s.,!?:;'"()\-\/]/g) || []).length;
+            if (weird / str.length > 0.08) return true;
+            const words = str.split(/\s+/).filter((w) => w.length >= 3);
+            if (words.length > 4) {
+              const weirdW = words.filter((w) => /[^a-zA-Z0-9.,!?-]/.test(w) || /[0-9][a-zA-Z]/.test(w));
+              if (weirdW.length / words.length > 0.35) return true;
+            }
+            return false;
+          };
+
           // Extract readable ASCII strings from stream objects
-          const strings = rawStr.match(/[\x20-\x7E\t\n\r]{4,}/g) || [];
+          const strings = rawStr.match(/[\x20-\x7E\t\n\r]{6,}/g) || [];
           extractedText = strings
-            .filter((s) => !s.startsWith('%PDF') && !s.includes('/Producer') && !s.includes('endobj') && !s.includes('endstream'))
+            .filter(
+              (s) =>
+                !s.startsWith('%PDF') &&
+                !s.includes('/Producer') &&
+                !s.includes('endobj') &&
+                !s.includes('endstream') &&
+                !isGarbled(s) &&
+                (s.match(/[a-zA-Z]{3,}/g) || []).length >= 3
+            )
             .join(' ')
             .trim();
 

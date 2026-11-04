@@ -32,6 +32,22 @@ function parseJsonSafely(rawText: string, fallback: any): any {
   }
 }
 
+function isGarbledText(text: string): boolean {
+  if (!text || text.length < 15) return false;
+  // Detect high ratio of non-alphanumeric, non-standard punctuation symbols
+  const weirdSymbols = (text.match(/[^a-zA-Z0-9\s.,!?:;'"()\-\/]/g) || []).length;
+  const ratio = weirdSymbols / text.length;
+  if (ratio > 0.08) return true;
+
+  // Detect high ratio of words mixing numbers, weird characters, or irregular casing
+  const words = text.split(/\s+/).filter((w) => w.length >= 3);
+  if (words.length > 4) {
+    const weirdWords = words.filter((w) => /[^a-zA-Z0-9.,!?-]/.test(w) || /[0-9][a-zA-Z]/.test(w));
+    if (weirdWords.length / words.length > 0.35) return true;
+  }
+  return false;
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -111,7 +127,8 @@ CRITICAL REQUIREMENTS:
 3. In "importantDefinitions", extract real definitions from the text with plain English simplifications.
 4. In "examples", provide concrete practical or theoretical examples from the document.
 5. In "examPreparation", provide high-yield revision concepts and at least 2 realistic exam questions with complete model answers.
-6. Return valid JSON ONLY matching the requested structure. NEVER return empty arrays for detailedExplanation or examPreparation.`;
+6. Return valid JSON ONLY matching the requested structure. NEVER return empty arrays for detailedExplanation or examPreparation.
+7. MANDATORY 100% ENGLISH POLICY: Every single word, explanation, definition, and question MUST be written in 100% proper, professional academic ENGLISH. Under NO circumstances output random characters, corrupted strings, unreadable binary artifacts, Urdu, or Roman Urdu. If any source snippet contains corrupted or garbled characters, ignore the corruption completely and explain the concepts in clean, correct, fluent academic English.`;
 
     const userPrompt = `Topic: "${topicName}"
 Chapter / Module: "${chapter || 'Core Module'}"
@@ -276,11 +293,20 @@ function generateDocumentDerivedNote(
   pageRange: string,
   sourceText: string
 ): any {
-  // Extract sentences from sourceText to ground the explanation in real document words
+  // Extract verified, readable English sentences from sourceText
   const rawSentences = (sourceText || '')
     .split(/(?<=[.?!])\s+/)
     .map((s) => s.trim().replace(/\s+/g, ' '))
-    .filter((s) => s.length > 25 && s.length < 250 && !s.includes('%PDF') && !s.includes('vubook'));
+    .filter(
+      (s) =>
+        s.length > 25 &&
+        s.length < 250 &&
+        !s.includes('%PDF') &&
+        !s.includes('vubook') &&
+        !s.startsWith('[Page') &&
+        !isGarbledText(s) &&
+        (s.match(/[a-zA-Z]{3,}/g) || []).length >= 4
+    );
 
   const definitionSentences = rawSentences.filter((s) =>
     /\b(is defined as|refers to|means|is a system|is a method|consists of|is classified)\b/i.test(s)
@@ -289,10 +315,16 @@ function generateDocumentDerivedNote(
   const conceptSentence =
     definitionSentences[0] ||
     rawSentences[0] ||
-    `${topicName} establishes foundational mechanisms and principles governing operational behavior in ${subject}.`;
-  const detail1 = rawSentences[1] || `Key components coordinate data flow, boundary detection, and error mitigation across interconnected nodes.`;
-  const detail2 = rawSentences[2] || `Standardized specifications ensure high determinism, seamless cross-vendor interoperability, and consistent execution.`;
-  const detail3 = rawSentences[3] || `Understanding the architectural trade-offs between complexity and throughput is essential for exam problem-solving.`;
+    `${topicName} establishes foundational mechanisms and architectural principles governing operational behavior in ${subject}.`;
+  const detail1 =
+    rawSentences[1] ||
+    `Key components coordinate data flow, boundary detection, and error mitigation across interconnected nodes.`;
+  const detail2 =
+    rawSentences[2] ||
+    `Standardized specifications ensure high determinism, seamless cross-vendor interoperability, and consistent execution.`;
+  const detail3 =
+    rawSentences[3] ||
+    `Understanding the architectural trade-offs between complexity and throughput is essential for exam problem-solving.`;
 
   const isCS610 = /cs610|computer networks|packet|data link|tcp|udp|ethernet|ip address|transmission|routing|topology/i.test(
     subject + ' ' + topicName + ' ' + chapter + ' ' + sourceText.slice(0, 3000)
