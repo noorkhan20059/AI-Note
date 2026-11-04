@@ -551,6 +551,25 @@ app.post('/api/document/extract-text', async (req: Request, res: Response) => {
       detectedSubject = 'Biology';
     }
 
+    // Check for formal Table of Contents in early pages (pages 1-5)
+    if (pagesData.length > 0) {
+      const tocText = pagesData.slice(0, 5).map((p) => p.text).join('\n');
+      const lectureTocMatches = [...tocText.matchAll(/Lecture\s+No\.?\s*(\d+)\s*\.{3,}\s*(\d+)\s*\n+([^\n\.]+)/gi)];
+      if (lectureTocMatches.length >= 3) {
+        lectureTocMatches.forEach((m) => {
+          const lecNum = m[1];
+          const pageNum = parseInt(m[2], 10);
+          const title = m[3].trim().replace(/\.+$/, '').trim();
+          detectedSections.push({
+            title: `Lecture ${lecNum}: ${title}`,
+            page: pageNum,
+            section: `Lecture ${lecNum}`,
+            summary: `Comprehensive academic notes for Lecture ${lecNum}: ${title}`,
+          });
+        });
+      }
+    }
+
     // If detectedSections is empty, parse from lines
     if (detectedSections.length === 0 && fullText.length > 0) {
       const lines = fullText.split('\n').map(l => l.trim()).filter(Boolean);

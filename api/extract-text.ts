@@ -152,8 +152,47 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // Populate detectedSections from pages or headings
+    // Step A: Check for formal Table of Contents in early pages (pages 1-5)
     if (pagesData.length > 0) {
+      const tocText = pagesData.slice(0, 5).map((p) => p.text).join('\n');
+      
+      // Pattern 1: Lecture No. X ... Page ... Title
+      const lectureTocMatches = [...tocText.matchAll(/Lecture\s+No\.?\s*(\d+)\s*\.{3,}\s*(\d+)\s*\n+([^\n\.]+)/gi)];
+      if (lectureTocMatches.length >= 3) {
+        lectureTocMatches.forEach((m) => {
+          const lecNum = m[1];
+          const pageNum = parseInt(m[2], 10);
+          const title = m[3].trim().replace(/\.+$/, '').trim();
+          detectedSections.push({
+            title: `Lecture ${lecNum}: ${title}`,
+            page: pageNum,
+            section: `Lecture ${lecNum}`,
+            summary: `Comprehensive academic notes for Lecture ${lecNum}: ${title}`,
+          });
+        });
+      }
+
+      // Pattern 2: Chapter X ... Page ... Title
+      if (detectedSections.length === 0) {
+        const chapterTocMatches = [...tocText.matchAll(/Chapter\s+(\d+)[\s:\.]+([^\n\.]+?)\s*\.{3,}\s*(\d+)/gi)];
+        if (chapterTocMatches.length >= 3) {
+          chapterTocMatches.forEach((m) => {
+            const chapNum = m[1];
+            const title = m[2].trim();
+            const pageNum = parseInt(m[3], 10);
+            detectedSections.push({
+              title: `Chapter ${chapNum}: ${title}`,
+              page: pageNum,
+              section: `Chapter ${chapNum}`,
+              summary: `Comprehensive notes for Chapter ${chapNum}: ${title}`,
+            });
+          });
+        }
+      }
+    }
+
+    // Step B: If no formal TOC matched, scan individual pages for headings
+    if (detectedSections.length === 0 && pagesData.length > 0) {
       pagesData.forEach((p) => {
         const lines = p.text.split('\n').map((l) => l.trim()).filter(Boolean);
         const headingLine = lines.find(

@@ -39,7 +39,31 @@ export const StorageService = {
   },
 
   saveDocuments(docs: StudyDocument[]) {
-    localStorage.setItem(KEYS.DOCUMENTS, JSON.stringify(docs));
+    try {
+      localStorage.setItem(KEYS.DOCUMENTS, JSON.stringify(docs));
+    } catch (e) {
+      console.warn('LocalStorage quota exceeded on saveDocuments; saving lightweight copy:', e);
+      try {
+        // Strip heavy raw content from non-active docs or trim to prevent crash
+        const lightweight = docs.map((d, i) => {
+          if (i === 0) {
+            return {
+              ...d,
+              content: d.content ? d.content.slice(0, 150000) : '',
+              pagesData: d.pagesData ? d.pagesData.slice(0, 60) : [],
+            };
+          }
+          return {
+            ...d,
+            content: d.content ? d.content.slice(0, 20000) : '',
+            pagesData: [],
+          };
+        });
+        localStorage.setItem(KEYS.DOCUMENTS, JSON.stringify(lightweight));
+      } catch (innerErr) {
+        console.error('Failed to save even lightweight documents to localStorage:', innerErr);
+      }
+    }
   },
 
   getActiveDocId(): string {
